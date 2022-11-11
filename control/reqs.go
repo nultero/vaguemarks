@@ -7,25 +7,45 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// hardcoding for now, will put in opts later
-const node = "node"
+func bootServer(opArg string) {
+	const (
+		node   = "node"
+		index  = "express/index.js"
+		rust   = "rust"
+		golang = "go"
+		godir  = "golang/main.go"
+	)
 
-func bootNode() {
+	var args []string
+	switch opArg {
+	case golang:
+		args = append(args, "run", godir)
+	case node:
+		args = append(args, index)
+	case rust:
+		os.Chdir(rust)
+		opArg = "cargo"
+		args = append(args, "run", "--release")
+	}
+
 	go func() {
-		cmd := exec.Command(node, "express/index.js")
+		cmd := exec.Command(opArg, args...)
 		err := cmd.Run()
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(fmt.Errorf(
+				"err in server-booting subcommand: %w", err,
+			))
 		}
 	}()
 }
 
-func killNode() {
-	psStrs := getPsOf(node)
+func killServer(opArg string) {
+	psStrs := getPsOf(opArg)
 	pid := psStrs[1]
 	cmd := exec.Command("kill", pid)
 	err := cmd.Run()
@@ -78,6 +98,7 @@ func hitRps(reqsPerSecond int, xmlFile []byte, printOut bool) {
 	}
 }
 
+// TODO: Currently busted
 func getCPULoadOf(procname string) {
 	ps := getPsOf(procname)
 	// ps output fmt:
@@ -98,24 +119,61 @@ func getXml() []byte {
 
 func main() {
 
+	opArg := ""
+	rps := 180
+	bypass := false
+
 	// verbose opt
 	printServOutputs := false
 	args := os.Args[1:]
 	if len(args) > 0 {
-		if args[0] == "-v" {
-			printServOutputs = true
+		for _, arg := range args {
+			if arg == "-v" {
+				printServOutputs = true
+				continue
+			} else if arg == "-by" {
+				bypass = true
+			}
+
+			if strings.Contains(arg, "rps") {
+				split := strings.Split(arg, "=")
+				n, err := strconv.Atoi(split[1])
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				rps = n
+			}
+
+			opArg = arg
 		}
 	}
+	if len(opArg) == 0 {
+		fmt.Println("no valid args")
+		os.Exit(0)
+	}
 
+	delay := 400 * time.Millisecond
 	xmlBytes := getXml()
-	bootNode()
-	defer killNode()
-	time.Sleep(200 * time.Millisecond) // time for node to boot? get errors w/o this
-	rps := 180
+
+	if !bypass {
+		bootServer(opArg)
+		switch opArg {
+		case "rust":
+			opArg = "rustyserver"
+			delay = 6 * time.Second
+			fmt.Println("rust arg provided; setting compile delay to 6 seconds; might not be enough")
+		}
+		defer killServer(opArg)
+
+		// time for node to boot / rust to compile
+		time.Sleep(delay)
+	}
+
 	fmt.Printf("targeting an rps of: \x1b[34m%v\x1b[0m\n", rps)
 	go hitRps(rps, xmlBytes, printServOutputs)
 	for {
-		getCPULoadOf(node)
+		getCPULoadOf(opArg)
 		time.Sleep(500 * time.Millisecond)
 	}
 }
